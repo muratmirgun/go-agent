@@ -3,6 +3,7 @@ package nranthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -275,6 +276,48 @@ func TestNRMessagesNewError(t *testing.T) {
 	})
 }
 
+func streamingHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	writeSSE := func(eventType, data string) {
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data)
+	}
+
+	startMsg, _ := json.Marshal(map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":    testMessageID,
+			"type":  "message",
+			"role":  "assistant",
+			"model": testModel,
+			"usage": map[string]interface{}{"input_tokens": 9, "output_tokens": 0},
+		},
+	})
+	writeSSE("message_start", string(startMsg))
+
+	delta1, _ := json.Marshal(map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]interface{}{"type": "text_delta", "text": testResponse},
+	})
+	writeSSE("content_block_delta", string(delta1))
+
+	msgDelta, _ := json.Marshal(map[string]interface{}{
+		"type":  "message_delta",
+		"delta": map[string]interface{}{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]interface{}{"output_tokens": 12},
+	})
+	writeSSE("message_delta", string(msgDelta))
+
+	writeSSE("message_stop", `{"type":"message_stop"}`)
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func TestNRMessagesNewWithExistingTxn(t *testing.T) {
 	client := mockAnthropicServer(t, successHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
@@ -305,6 +348,149 @@ func TestNRMessagesNewWithExistingTxn(t *testing.T) {
 			Intrinsics: map[string]interface{}{
 				"type":      "Transaction",
 				"name":      "OtherTransaction/Go/my-existing-txn",
+				"guid":      internal.MatchAnything,
+				"priority":  internal.MatchAnything,
+				"sampled":   internal.MatchAnything,
+				"traceId":   internal.MatchAnything,
+				"timestamp": internal.MatchAnything,
+				"duration":  internal.MatchAnything,
+				"totalTime": internal.MatchAnything,
+			},
+			UserAttributes: map[string]interface{}{},
+			AgentAttributes: map[string]interface{}{
+				"llm": true,
+			},
+		},
+	})
+}
+
+func TestNRMessagesNewStreaming(t *testing.T) {
+	client := mockAnthropicServer(t, streamingHandler)
+	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
+	nrClient := NewClient(app.Application, client)
+
+	stream := nrClient.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
+		Model:     anthropic.Model(testModel),
+		MaxTokens: 150,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(testPrompt)),
+		},
+	})
+
+	for stream.Next() {
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	app.ExpectCustomEvents(t, []internal.WantEvent{
+		{
+			Intrinsics: map[string]interface{}{
+				"type":      "LlmChatCompletionSummary",
+				"timestamp": internal.MatchAnything,
+			},
+			UserAttributes: map[string]interface{}{
+				"id":                             internal.MatchAnything,
+				"span_id":                        internal.MatchAnything,
+				"trace_id":                       internal.MatchAnything,
+				"request.model":                  testModel,
+				"request.max_tokens":             int64(150),
+				"vendor":                         "anthropic",
+				"ingest_source":                  "Go",
+				"duration":                       internal.MatchAnything,
+				"response.model":                 testModel,
+				"response.choices.finish_reason": "end_turn",
+				"response.number_of_messages":    2,
+			},
+		},
+		{
+			Intrinsics: map[string]interface{}{
+				"type":      "LlmChatCompletionMessage",
+				"timestamp": internal.MatchAnything,
+			},
+			UserAttributes: map[string]interface{}{
+				"id":             internal.MatchAnything,
+				"span_id":        internal.MatchAnything,
+				"trace_id":       internal.MatchAnything,
+				"completion_id":  internal.MatchAnything,
+				"sequence":       0,
+				"role":           "user",
+				"content":        testPrompt,
+				"vendor":         "anthropic",
+				"ingest_source":  "Go",
+				"response.model": testModel,
+			},
+		},
+		{
+			Intrinsics: map[string]interface{}{
+				"type":      "LlmChatCompletionMessage",
+				"timestamp": internal.MatchAnything,
+			},
+			UserAttributes: map[string]interface{}{
+				"id":             internal.MatchAnything,
+				"span_id":        internal.MatchAnything,
+				"trace_id":       internal.MatchAnything,
+				"completion_id":  internal.MatchAnything,
+				"sequence":       1,
+				"role":           "assistant",
+				"content":        testResponse,
+				"vendor":         "anthropic",
+				"ingest_source":  "Go",
+				"response.model": testModel,
+				"is_response":    true,
+			},
+		},
+	})
+}
+
+func TestNRMessagesNewStreamingAIMonitoringNotEnabled(t *testing.T) {
+	client := mockAnthropicServer(t, streamingHandler)
+	app := integrationsupport.NewTestApp(nil) // AI monitoring NOT enabled
+	nrClient := NewClient(app.Application, client)
+
+	stream := nrClient.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
+		Model:     anthropic.Model(testModel),
+		MaxTokens: 150,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(testPrompt)),
+		},
+	})
+	for stream.Next() {
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	app.ExpectCustomEvents(t, []internal.WantEvent{})
+}
+
+func TestNRMessagesNewStreamingWithExistingTxn(t *testing.T) {
+	client := mockAnthropicServer(t, streamingHandler)
+	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
+	nrClient := NewClient(app.Application, client)
+
+	txn := app.StartTransaction("my-existing-streaming-txn")
+	ctx := newrelic.NewContext(context.Background(), txn)
+
+	stream := nrClient.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(testModel),
+		MaxTokens: 150,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(testPrompt)),
+		},
+	})
+	for stream.Next() {
+	}
+	stream.Close()
+	txn.End()
+
+	app.ExpectTxnEvents(t, []internal.WantEvent{
+		{
+			Intrinsics: map[string]interface{}{
+				"type":      "Transaction",
+				"name":      "OtherTransaction/Go/my-existing-streaming-txn",
 				"guid":      internal.MatchAnything,
 				"priority":  internal.MatchAnything,
 				"sampled":   internal.MatchAnything,

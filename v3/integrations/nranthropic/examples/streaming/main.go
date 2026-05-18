@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/newrelic/go-agent/v3/integrations/nranthropic"
 	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
@@ -17,30 +19,35 @@ func main() {
 		newrelic.ConfigAppName("Anthropic Streaming Example"),
 		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
 		newrelic.ConfigDebugLogger(os.Stdout),
+		newrelic.ConfigAIMonitoringEnabled(true),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := app.WaitForConnection(5 * time.Second); err != nil {
+		log.Fatalf("New Relic failed to connect: %v", err)
+	}
+	defer app.Shutdown(10 * time.Second)
 
 	// Start a transaction
 	txn := app.StartTransaction("streaming-message")
 	defer txn.End()
 
 	ctx := newrelic.NewContext(context.Background(), txn)
-
-	// Create Anthropic client pointed at the NR proxy.
-	// Set NR_ANTHROPIC_BASE_URL to override (defaults to the NR staging proxy).
+	// Set NR_ANTHROPIC_BASE_URL_NR to override (defaults to the NR staging proxy).
 	baseURL := os.Getenv("NR_ANTHROPIC_BASE_URL_NR")
 	// The NR proxy uses its own model slugs (see GET /v1/models).
 	// Set NR_ANTHROPIC_MODEL to override.
 	model := os.Getenv("NR_ANTHROPIC_MODEL")
 	if model == "" {
-		model = "claude-3-5-sonnet"
+		model = "claude-sonnet-4-6"
 	}
 	client := anthropic.NewClient(
-		option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
+		option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY_AIR")),
 		option.WithBaseURL(baseURL),
 	)
+
+	nrClient := nranthropic.NewClient(app, &client)
 
 	prompt := "Explain the benefits of using Go for backend services in 3 points"
 	fmt.Println("=== Streaming Message Example ===")
@@ -48,7 +55,7 @@ func main() {
 	fmt.Print("Response: ")
 
 	// Create a streaming message
-	stream := client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+	stream := nrClient.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
 		MaxTokens: 1024,
 		Messages: []anthropic.MessageParam{
@@ -72,4 +79,9 @@ func main() {
 		log.Fatalf("Stream error: %v", err)
 	}
 
+	if err := stream.Close(); err != nil {
+		log.Fatalf("Stream close error: %v", err)
+	}
+
+	fmt.Println()
 }
