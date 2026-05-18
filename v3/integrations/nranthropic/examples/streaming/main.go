@@ -42,12 +42,10 @@ func main() {
 	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
-	client := anthropic.NewClient(
+	nrClient := nranthropic.NewClient(app,
 		option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY_AIR")),
 		option.WithBaseURL(baseURL),
 	)
-
-	nrClient := nranthropic.NewClient(app, &client)
 
 	prompt := "Explain the benefits of using Go for backend services in 3 points"
 	fmt.Println("=== Streaming Message Example ===")

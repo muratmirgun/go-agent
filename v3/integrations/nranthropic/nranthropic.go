@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -30,7 +31,12 @@ import (
 // Version is the current version of the nranthropic integration.
 const Version = "0.1.0"
 
+var reportStreamingDisabled func()
+
 func init() {
+	reportStreamingDisabled = sync.OnceFunc(func() {
+		internal.TrackUsage("Go", "ML", "Streaming", "Disabled")
+	})
 	info, ok := debug.ReadBuildInfo()
 	if info != nil && ok {
 		for _, module := range info.Deps {
@@ -45,34 +51,34 @@ func init() {
 
 // NRClient wraps an Anthropic client with New Relic instrumentation.
 type NRClient struct {
-	Client           *anthropic.Client
-	Messages         NRMessageService
-	customAttributes map[string]interface{}
+	Client   anthropic.Client
+	Messages NRMessageService
 }
 
 // NRMessageService wraps the Anthropic MessageService with instrumentation.
 type NRMessageService struct {
-	client *anthropic.Client
-	app    *newrelic.Application
-	nrc    *NRClient
+	messages         *anthropic.MessageService
+	app              *newrelic.Application
+	customAttributes map[string]interface{}
 }
 
-// NewClient creates an NRClient wrapping the given Anthropic client.
-func NewClient(app *newrelic.Application, client *anthropic.Client) *NRClient {
-	nrc := &NRClient{Client: client}
-	nrc.Messages = NRMessageService{client: client, app: app, nrc: nrc}
+// NewClient creates an NRClient wrapping a new Anthropic client initialized with opts.
+func NewClient(app *newrelic.Application, opts ...option.RequestOption) *NRClient {
+	nrc := &NRClient{Client: anthropic.NewClient(opts...)}
+	nrc.Messages = NRMessageService{
+		messages:         &nrc.Client.Messages,
+		app:              app,
+		customAttributes: make(map[string]interface{}),
+	}
 	return nrc
 }
 
 // AddCustomAttributes attaches llm.* prefixed key-value pairs to all LLM events
 // recorded by this client.
 func (c *NRClient) AddCustomAttributes(attrs map[string]interface{}) {
-	if c.customAttributes == nil {
-		c.customAttributes = make(map[string]interface{})
-	}
 	for k, v := range attrs {
 		if strings.HasPrefix(k, "llm.") {
-			c.customAttributes[k] = v
+			c.Messages.customAttributes[k] = v
 		}
 	}
 }
@@ -88,7 +94,7 @@ func (c *NRClient) AddCustomAttributes(attrs map[string]interface{}) {
 func (s *NRMessageService) New(ctx context.Context, params anthropic.MessageNewParams, opts ...option.RequestOption) (*anthropic.Message, error) {
 	cfg, _ := s.app.Config()
 	if !cfg.AIMonitoring.Enabled {
-		return s.client.Messages.New(ctx, params, opts...)
+		return s.messages.New(ctx, params, opts...)
 	}
 
 	txn := newrelic.FromContext(ctx)
@@ -106,7 +112,7 @@ func (s *NRMessageService) New(ctx context.Context, params anthropic.MessageNewP
 
 	seg := txn.StartSegment("Llm/completion/Anthropic/MessageNew")
 	start := time.Now()
-	resp, err := s.client.Messages.New(ctx, params, opts...)
+	resp, err := s.messages.New(ctx, params, opts...)
 	duration := time.Since(start).Milliseconds()
 	seg.End()
 
@@ -216,7 +222,7 @@ func (s *NRMessageService) recordMessages(completionID, spanID, traceID string, 
 }
 
 func (s *NRMessageService) appendCustomAttrs(data map[string]interface{}) {
-	for k, v := range s.nrc.customAttributes {
+	for k, v := range s.customAttributes {
 		data[k] = v
 	}
 }
@@ -245,21 +251,21 @@ func extractResponseText(blocks []anthropic.ContentBlockUnion) string {
 // Call Next() to advance the stream, Current() to read the current event, Err() to
 // check for errors, and Close() to flush NR events and release resources.
 type NRMessageStreamWrapper struct {
-	stream       *ssestream.Stream[anthropic.MessageStreamEventUnion]
-	app          *newrelic.Application
-	txn          *newrelic.Transaction
-	txnOwned     bool
-	seg          *newrelic.Segment
-	nrc          *NRClient
-	params       anthropic.MessageNewParams
-	completionID string
-	spanID       string
-	traceID      string
-	responseText strings.Builder
-	responseID   string
-	responseModel string
-	stopReason   string
-	start        time.Time
+	stream           *ssestream.Stream[anthropic.MessageStreamEventUnion]
+	app              *newrelic.Application
+	txn              *newrelic.Transaction
+	txnOwned         bool
+	seg              *newrelic.Segment
+	customAttributes map[string]interface{}
+	params           anthropic.MessageNewParams
+	completionID     string
+	spanID           string
+	traceID          string
+	responseText     strings.Builder
+	responseID       string
+	responseModel    string
+	stopReason       string
+	start            time.Time
 }
 
 // NewStreaming wraps client.Messages.NewStreaming with New Relic instrumentation.
@@ -269,9 +275,10 @@ func (s *NRMessageService) NewStreaming(ctx context.Context, params anthropic.Me
 	cfg, _ := s.app.Config()
 
 	if !cfg.AIMonitoring.Streaming.Enabled {
-		internal.TrackUsage("Go", "ML", "Streaming", "Disabled")
+		if reportStreamingDisabled != nil {
+			reportStreamingDisabled()
+		}
 	}
-
 	txn := newrelic.FromContext(ctx)
 	txnOwned := false
 	if txn == nil {
@@ -281,26 +288,26 @@ func (s *NRMessageService) NewStreaming(ctx context.Context, params anthropic.Me
 	}
 
 	w := &NRMessageStreamWrapper{
-		app:          s.app,
-		txn:          txn,
-		txnOwned:     txnOwned,
-		nrc:          s.nrc,
-		params:       params,
-		completionID: uuid.New().String(),
-		spanID:       txn.GetTraceMetadata().SpanID,
-		traceID:      txn.GetTraceMetadata().TraceID,
-		start:        time.Now(),
+		app:              s.app,
+		txn:              txn,
+		txnOwned:         txnOwned,
+		customAttributes: s.customAttributes,
+		params:           params,
+		completionID:     uuid.New().String(),
+		spanID:           txn.GetTraceMetadata().SpanID,
+		traceID:          txn.GetTraceMetadata().TraceID,
+		start:            time.Now(),
 	}
 
 	if !cfg.AIMonitoring.Enabled || !cfg.AIMonitoring.Streaming.Enabled {
-		w.stream = s.client.Messages.NewStreaming(ctx, params, opts...)
+		w.stream = s.messages.NewStreaming(ctx, params, opts...)
 		return w
 	}
 
 	integrationsupport.AddAgentAttribute(txn, "llm", "", true)
 	seg := txn.StartSegment("Llm/completion/Anthropic/MessageNewStreaming")
 	w.seg = seg
-	w.stream = s.client.Messages.NewStreaming(ctx, params, opts...)
+	w.stream = s.messages.NewStreaming(ctx, params, opts...)
 	return w
 }
 
@@ -451,7 +458,7 @@ func (w *NRMessageStreamWrapper) Close() error {
 }
 
 func (w *NRMessageStreamWrapper) appendCustomAttrs(data map[string]interface{}) {
-	for k, v := range w.nrc.customAttributes {
+	for k, v := range w.customAttributes {
 		data[k] = v
 	}
 }

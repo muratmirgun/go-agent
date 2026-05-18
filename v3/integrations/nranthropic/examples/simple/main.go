@@ -37,12 +37,10 @@ func main() {
 	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
-	client := anthropic.NewClient(
+	nrClient := nranthropic.NewClient(app,
 		option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY_AIR")),
 		option.WithBaseURL(baseURL),
 	)
-
-	nrClient := nranthropic.NewClient(app, &client)
 
 	// Send a message
 	prompt := "Write a haiku about programming in Go"

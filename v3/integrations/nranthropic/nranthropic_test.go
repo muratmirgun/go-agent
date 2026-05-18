@@ -28,17 +28,16 @@ func noCodeLevelMetrics(cfg *newrelic.Config) {
 	cfg.CodeLevelMetrics.Enabled = false
 }
 
-// mockAnthropicServer returns a test server and an Anthropic client pointing at it.
+// mockAnthropicServer returns request options pointing at a test server.
 // The handler is called for every request.
-func mockAnthropicServer(t *testing.T, handler http.HandlerFunc) *anthropic.Client {
+func mockAnthropicServer(t *testing.T, handler http.HandlerFunc) []option.RequestOption {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	client := anthropic.NewClient(
+	return []option.RequestOption{
 		option.WithAPIKey("test-key"),
 		option.WithBaseURL(srv.URL),
-	)
-	return &client
+	}
 }
 
 func successHandler(w http.ResponseWriter, r *http.Request) {
@@ -74,34 +73,31 @@ func errorHandler(w http.ResponseWriter, r *http.Request) {
 
 func TestAddCustomAttributes(t *testing.T) {
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	client := mockAnthropicServer(t, successHandler)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, successHandler)...)
 
 	nrClient.AddCustomAttributes(map[string]interface{}{
 		"llm.foo": "bar",
 	})
-	if nrClient.customAttributes["llm.foo"] != "bar" {
-		t.Errorf("expected llm.foo=bar, got %v", nrClient.customAttributes["llm.foo"])
+	if nrClient.Messages.customAttributes["llm.foo"] != "bar" {
+		t.Errorf("expected llm.foo=bar, got %v", nrClient.Messages.customAttributes["llm.foo"])
 	}
 }
 
 func TestAddCustomAttributesIncorrectPrefix(t *testing.T) {
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	client := mockAnthropicServer(t, successHandler)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, successHandler)...)
 
 	nrClient.AddCustomAttributes(map[string]interface{}{
 		"notllm.foo": "bar",
 	})
-	if len(nrClient.customAttributes) != 0 {
-		t.Errorf("expected no custom attributes, got %d", len(nrClient.customAttributes))
+	if len(nrClient.Messages.customAttributes) != 0 {
+		t.Errorf("expected no custom attributes, got %d", len(nrClient.Messages.customAttributes))
 	}
 }
 
 func TestNRMessagesNew(t *testing.T) {
-	client := mockAnthropicServer(t, successHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, successHandler)...)
 
 	resp, err := nrClient.Messages.New(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(testModel),
@@ -178,9 +174,8 @@ func TestNRMessagesNew(t *testing.T) {
 }
 
 func TestNRMessagesNewAIMonitoringNotEnabled(t *testing.T) {
-	client := mockAnthropicServer(t, successHandler)
 	app := integrationsupport.NewTestApp(nil) // AI monitoring NOT enabled
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, successHandler)...)
 
 	resp, err := nrClient.Messages.New(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(testModel),
@@ -200,9 +195,8 @@ func TestNRMessagesNewAIMonitoringNotEnabled(t *testing.T) {
 }
 
 func TestNRMessagesNewError(t *testing.T) {
-	client := mockAnthropicServer(t, errorHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, errorHandler)...)
 
 	_, err := nrClient.Messages.New(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(testModel),
@@ -319,9 +313,8 @@ func streamingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestNRMessagesNewWithExistingTxn(t *testing.T) {
-	client := mockAnthropicServer(t, successHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, successHandler)...)
 
 	txn := app.StartTransaction("my-existing-txn")
 	ctx := newrelic.NewContext(context.Background(), txn)
@@ -365,9 +358,8 @@ func TestNRMessagesNewWithExistingTxn(t *testing.T) {
 }
 
 func TestNRMessagesNewStreaming(t *testing.T) {
-	client := mockAnthropicServer(t, streamingHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, streamingHandler)...)
 
 	stream := nrClient.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(testModel),
@@ -447,9 +439,8 @@ func TestNRMessagesNewStreaming(t *testing.T) {
 }
 
 func TestNRMessagesNewStreamingAIMonitoringNotEnabled(t *testing.T) {
-	client := mockAnthropicServer(t, streamingHandler)
 	app := integrationsupport.NewTestApp(nil) // AI monitoring NOT enabled
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, streamingHandler)...)
 
 	stream := nrClient.Messages.NewStreaming(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(testModel),
@@ -467,9 +458,8 @@ func TestNRMessagesNewStreamingAIMonitoringNotEnabled(t *testing.T) {
 }
 
 func TestNRMessagesNewStreamingWithExistingTxn(t *testing.T) {
-	client := mockAnthropicServer(t, streamingHandler)
 	app := integrationsupport.NewTestApp(nil, newrelic.ConfigAIMonitoringEnabled(true), noCodeLevelMetrics)
-	nrClient := NewClient(app.Application, client)
+	nrClient := NewClient(app.Application, mockAnthropicServer(t, streamingHandler)...)
 
 	txn := app.StartTransaction("my-existing-streaming-txn")
 	ctx := newrelic.NewContext(context.Background(), txn)
