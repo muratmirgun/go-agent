@@ -279,6 +279,16 @@ func (s *NRMessageService) NewStreaming(ctx context.Context, params anthropic.Me
 			reportStreamingDisabled()
 		}
 	}
+
+	if !cfg.AIMonitoring.Enabled || !cfg.AIMonitoring.Streaming.Enabled {
+		return &NRMessageStreamWrapper{
+			app:    s.app,
+			params: params,
+			stream: s.messages.NewStreaming(ctx, params, opts...),
+			start:  time.Now(),
+		}
+	}
+
 	txn := newrelic.FromContext(ctx)
 	txnOwned := false
 	if txn == nil {
@@ -287,28 +297,22 @@ func (s *NRMessageService) NewStreaming(ctx context.Context, params anthropic.Me
 		ctx = newrelic.NewContext(ctx, txn)
 	}
 
-	w := &NRMessageStreamWrapper{
+	integrationsupport.AddAgentAttribute(txn, "llm", "", true)
+	seg := txn.StartSegment("Llm/completion/Anthropic/NewStreaming")
+
+	return &NRMessageStreamWrapper{
 		app:              s.app,
 		txn:              txn,
 		txnOwned:         txnOwned,
+		seg:              seg,
 		customAttributes: s.customAttributes,
 		params:           params,
 		completionID:     uuid.New().String(),
 		spanID:           txn.GetTraceMetadata().SpanID,
 		traceID:          txn.GetTraceMetadata().TraceID,
 		start:            time.Now(),
+		stream:           s.messages.NewStreaming(ctx, params, opts...),
 	}
-
-	if !cfg.AIMonitoring.Enabled || !cfg.AIMonitoring.Streaming.Enabled {
-		w.stream = s.messages.NewStreaming(ctx, params, opts...)
-		return w
-	}
-
-	integrationsupport.AddAgentAttribute(txn, "llm", "", true)
-	seg := txn.StartSegment("Llm/completion/Anthropic/NewStreaming")
-	w.seg = seg
-	w.stream = s.messages.NewStreaming(ctx, params, opts...)
-	return w
 }
 
 // Next advances the stream to the next event and accumulates response state.
