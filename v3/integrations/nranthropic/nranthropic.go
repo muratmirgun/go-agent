@@ -110,7 +110,7 @@ func (s *NRMessageService) New(ctx context.Context, params anthropic.MessageNewP
 	spanID := txn.GetTraceMetadata().SpanID
 	traceID := txn.GetTraceMetadata().TraceID
 
-	seg := txn.StartSegment("Llm/completion/Anthropic/MessageNew")
+	seg := txn.StartSegment("Llm/completion/Anthropic/New")
 	start := time.Now()
 	resp, err := s.messages.New(ctx, params, opts...)
 	duration := time.Since(start).Milliseconds()
@@ -305,7 +305,7 @@ func (s *NRMessageService) NewStreaming(ctx context.Context, params anthropic.Me
 	}
 
 	integrationsupport.AddAgentAttribute(txn, "llm", "", true)
-	seg := txn.StartSegment("Llm/completion/Anthropic/MessageNewStreaming")
+	seg := txn.StartSegment("Llm/completion/Anthropic/NewStreaming")
 	w.seg = seg
 	w.stream = s.messages.NewStreaming(ctx, params, opts...)
 	return w
@@ -345,14 +345,17 @@ func (w *NRMessageStreamWrapper) Err() error {
 // ends the segment, ends the transaction if it was started by this wrapper,
 // and closes the underlying stream.
 func (w *NRMessageStreamWrapper) Close() error {
-	err := w.stream.Close()
+	w.recordCustomEvent()
+	if w.txnOwned {
+		w.txn.End()
+	}
+	return w.stream.Close()
+}
 
+func (w *NRMessageStreamWrapper) recordCustomEvent() {
 	cfg, _ := w.app.Config()
 	if !cfg.AIMonitoring.Enabled || !cfg.AIMonitoring.Streaming.Enabled {
-		if w.txnOwned {
-			w.txn.End()
-		}
-		return err
+		return
 	}
 
 	if w.seg != nil {
@@ -426,35 +429,32 @@ func (w *NRMessageStreamWrapper) Close() error {
 		w.app.RecordCustomEvent("LlmChatCompletionMessage", msgData)
 	}
 
-	if !isError {
-		responseText := w.responseText.String()
-		responseSeq := len(w.params.Messages)
-		respData := map[string]interface{}{
-			"id":             fmt.Sprintf("%s-%d", w.responseID, responseSeq),
-			"span_id":        w.spanID,
-			"trace_id":       w.traceID,
-			"role":           "assistant",
-			"completion_id":  w.completionID,
-			"sequence":       responseSeq,
-			"response.model": model,
-			"vendor":         "anthropic",
-			"ingest_source":  "Go",
-			"is_response":    true,
-		}
-		if cfg.AIMonitoring.RecordContent.Enabled && responseText != "" {
-			respData["content"] = responseText
-		}
-		if tokens, ok := w.app.InvokeLLMTokenCountCallback(model, responseText); ok {
-			respData["token_count"] = tokens
-		}
-		w.appendCustomAttrs(respData)
-		w.app.RecordCustomEvent("LlmChatCompletionMessage", respData)
+	if isError {
+		return
 	}
 
-	if w.txnOwned {
-		w.txn.End()
+	responseText := w.responseText.String()
+	responseSeq := len(w.params.Messages)
+	respData := map[string]interface{}{
+		"id":             fmt.Sprintf("%s-%d", w.responseID, responseSeq),
+		"span_id":        w.spanID,
+		"trace_id":       w.traceID,
+		"role":           "assistant",
+		"completion_id":  w.completionID,
+		"sequence":       responseSeq,
+		"response.model": model,
+		"vendor":         "anthropic",
+		"ingest_source":  "Go",
+		"is_response":    true,
 	}
-	return err
+	if cfg.AIMonitoring.RecordContent.Enabled && responseText != "" {
+		respData["content"] = responseText
+	}
+	if tokens, ok := w.app.InvokeLLMTokenCountCallback(model, responseText); ok {
+		respData["token_count"] = tokens
+	}
+	w.appendCustomAttrs(respData)
+	w.app.RecordCustomEvent("LlmChatCompletionMessage", respData)
 }
 
 func (w *NRMessageStreamWrapper) appendCustomAttrs(data map[string]interface{}) {
