@@ -5,4 +5,3 @@ go 1.25
 
 replace github.com/newrelic/go-agent/v3/integrations/nrnats v1.0.0 => ../
 
-replace github.com/newrelic/go-agent/v3 => ../../..
