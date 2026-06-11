@@ -1,3 +1,21 @@
+## 3.44.0
+### Added
+  * Added Support for Anthropic SDK `nranthropic`
+  * Added Support for GocqlX `nrgocqlx`
+### Fixed
+  * Export Internal Test Types via `integrationsupport` to unblock external test consumers
+    * Thank you to community member @nitinprajwal for contributing to this solution
+  * Fixed a bug in sqlparse to support optional `INTO` statements in sql integrations
+  * Fixed a bug in `nrnats` that caused flaky testing
+### Security
+  * Dependabot Security Bumps
+    * `nrfiber`
+
+
+### Support statement
+We use the latest version of the Go language. At minimum, you should be using no version of Go older than what is supported by the Go team themselves.
+See the [Go agent EOL Policy](https://docs.newrelic.com/docs/apm/agents/go-agent/get-started/go-agent-eol-policy/) for details about supported versions of the Go agent and third-party components.
+
 ## 3.43.3
 ### Feature
   * EXPERIMENTAL: Added a config option `ConfigAppLogDecoratingWithinMessage` to allow Local Log Decorator to appear within a message field.  This can only be applied to the `logcontext-v2/nrlogrus` integration. The `logcontext-v2/nrlogrus` integration will be bumped to v1.1.4.
