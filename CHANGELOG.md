@@ -1,3 +1,16 @@
+## 3.44.1
+### Fixed
+  * Corrected incorrect tag for previous release 
+### Security
+  * Dependabot security bumps
+    * nrgochi (integration will be bumped to v5.2.4)
+    * nrmongo (integration will be bumped to v1.17.7)
+    * nrmongo-v2 (integration will be bumped to v2.4.2)
+    * nrnats (integration will be bumped to v2.11.15)
+### Support statement
+We use the latest version of the Go language. At minimum, you should be using no version of Go older than what is supported by the Go team themselves.
+See the [Go agent EOL Policy](https://docs.newrelic.com/docs/apm/agents/go-agent/get-started/go-agent-eol-policy/) for details about supported versions of the Go agent and third-party components.
+
 ## 3.44.0
 ### Added
   * Added Support for Anthropic SDK `nranthropic`
